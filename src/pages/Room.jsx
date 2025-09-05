@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useContext, useRef } from 'react';
-import { useParams, useLocation } from 'react-router-dom';
+import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import AuthContext from '../context/AuthContext';
-import { socket } from '../utils/socket';
+import { socket, connectSocket, disconnectSocket } from '../utils/socket';
 
 const Room = () => {
   const { roomCode } = useParams();
   const location = useLocation();
   const { user } = useContext(AuthContext);
   const videoRef = useRef(null);
+  const navigate = useNavigate();
   
   const [users, setUsers] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -17,145 +18,186 @@ const Room = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [roomData, setRoomData] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [connectionError, setConnectionError] = useState(null);
+  const [isJoining, setIsJoining] = useState(false);
 
   const userName = user?.email || 'Anonymous';
 
   useEffect(() => {
-    console.log('🔌 Room component mounted, connecting to socket...');
+    console.log('🔌 Room component mounted, initializing connection...');
     
-    // Set initial connection status
-    setIsConnected(socket.connected);
+    let isComponentMounted = true;
     
-    // Join room only once
-    const joinRoom = () => {
-      console.log('👋 Joining room:', roomCode, 'as:', userName);
-      socket.emit('join-room', {
-        roomCode,
-        user: userName
-      });
-    };
-
-    // Socket event listeners
-    const onConnect = () => {
-      console.log('✅ Connected to server');
-      setIsConnected(true);
-      joinRoom(); // Join room when connected
-    };
-    
-    const onDisconnect = (reason) => {
-      console.log('❌ Disconnected from server, reason:', reason);
-      setIsConnected(false);
-    };
-    
-    const onRoomState = (state) => {
-      console.log('📊 Received room state:', state);
-      setRoomData(state);
-      setUsers(state.users || []);
-      setMessages(state.messages || []);
-      
-      if (videoRef.current && state.currentTime !== undefined) {
-        setIsSyncing(true);
-        videoRef.current.currentTime = state.currentTime;
-        if (state.isPlaying) {
-          videoRef.current.play().catch(console.error);
-        } else {
-          videoRef.current.pause();
+    const initializeConnection = async () => {
+      try {
+        setIsJoining(true);
+        setConnectionError(null);
+        
+        // Connect socket if not already connected
+        if (!socket.connected) {
+          await connectSocket(userName, roomCode);
         }
-        setIsPlaying(state.isPlaying);
-        setTimeout(() => setIsSyncing(false), 500);
+        
+        // Set up socket event listeners
+        setupSocketListeners();
+        
+        // Join room
+        socket.emit('join-room', {
+          roomCode,
+          user: userName
+        });
+        
+      } catch (error) {
+        console.error('❌ Failed to initialize connection:', error);
+        setConnectionError('Failed to connect to server');
+      } finally {
+        setIsJoining(false);
       }
     };
 
-    const onUserJoined = (userData) => {
-      console.log('👤 User joined:', userData);
-      setUsers(prev => {
-        const exists = prev.find(u => u.id === userData.id);
-        return exists ? prev : [...prev, userData];
-      });
+    const setupSocketListeners = () => {
+      // Connection status listeners
+      const onConnect = () => {
+        console.log('✅ Connected to server');
+        setIsConnected(true);
+        setConnectionError(null);
+      };
+      
+      const onDisconnect = (reason) => {
+        console.log('❌ Disconnected from server, reason:', reason);
+        setIsConnected(false);
+        if (reason === 'io server disconnect') {
+          setConnectionError('Disconnected by server');
+        }
+      };
+
+      const onForceDisconnect = (data) => {
+        console.log('🚨 Force disconnect:', data.reason);
+        setConnectionError(data.reason);
+        setTimeout(() => navigate('/dashboard'), 3000);
+      };
+      
+      const onRoomState = (state) => {
+        console.log('📊 Received room state:', state);
+        setRoomData(state);
+        setUsers(state.users || []);
+        setMessages(state.messages || []);
+        
+        if (videoRef.current && state.currentTime !== undefined) {
+          setIsSyncing(true);
+          videoRef.current.currentTime = state.currentTime;
+          if (state.isPlaying) {
+            videoRef.current.play().catch(console.error);
+          } else {
+            videoRef.current.pause();
+          }
+          setIsPlaying(state.isPlaying);
+          setTimeout(() => setIsSyncing(false), 500);
+        }
+      };
+
+      const onUserJoined = (userData) => {
+        console.log('👤 User joined:', userData);
+        setUsers(prev => {
+          const exists = prev.find(u => u.id === userData.user.id);
+          return exists ? prev : [...prev, userData.user];
+        });
+      };
+
+      const onUserLeft = (data) => {
+        console.log('👋 User left:', data);
+        setUsers(prev => prev.filter(u => u.id !== data.userId));
+      };
+
+      const onNewMessage = (message) => {
+        console.log('💬 New message:', message);
+        setMessages(prev => [...prev, message]);
+      };
+
+      const onVideoPlay = (data) => {
+        console.log('▶️ Video play event:', data);
+        if (videoRef.current && !isSyncing) {
+          setIsSyncing(true);
+          videoRef.current.currentTime = data.currentTime;
+          videoRef.current.play().catch(console.error);
+          setIsPlaying(true);
+          setTimeout(() => setIsSyncing(false), 500);
+        }
+      };
+
+      const onVideoPause = (data) => {
+        console.log('⏸️ Video pause event:', data);
+        if (videoRef.current && !isSyncing) {
+          setIsSyncing(true);
+          videoRef.current.currentTime = data.currentTime;
+          videoRef.current.pause();
+          setIsPlaying(false);
+          setTimeout(() => setIsSyncing(false), 500);
+        }
+      };
+
+      const onVideoSeek = (data) => {
+        console.log('⏭️ Video seek event:', data);
+        if (videoRef.current && !isSyncing) {
+          setIsSyncing(true);
+          videoRef.current.currentTime = data.currentTime;
+          setTimeout(() => setIsSyncing(false), 500);
+        }
+      };
+
+      const onError = (error) => {
+        console.error('🔥 Socket error:', error);
+        setConnectionError(error.message || 'Socket error occurred');
+      };
+
+      // Add event listeners
+      socket.on('connect', onConnect);
+      socket.on('disconnect', onDisconnect);
+      socket.on('force-disconnect', onForceDisconnect);
+      socket.on('room-state', onRoomState);
+      socket.on('user-joined', onUserJoined);
+      socket.on('user-left', onUserLeft);
+      socket.on('new-message', onNewMessage);
+      socket.on('video-play', onVideoPlay);
+      socket.on('video-pause', onVideoPause);
+      socket.on('video-seek', onVideoSeek);
+      socket.on('error', onError);
+
+      // Return cleanup function for this setup
+      return () => {
+        socket.off('connect', onConnect);
+        socket.off('disconnect', onDisconnect);
+        socket.off('force-disconnect', onForceDisconnect);
+        socket.off('room-state', onRoomState);
+        socket.off('user-joined', onUserJoined);
+        socket.off('user-left', onUserLeft);
+        socket.off('new-message', onNewMessage);
+        socket.off('video-play', onVideoPlay);
+        socket.off('video-pause', onVideoPause);
+        socket.off('video-seek', onVideoSeek);
+        socket.off('error', onError);
+      };
     };
 
-    const onUserLeft = (userId) => {
-      console.log('👋 User left:', userId);
-      setUsers(prev => prev.filter(u => u.id !== userId));
-    };
+    // Initialize connection
+    initializeConnection();
+    const cleanupListeners = setupSocketListeners();
 
-    const onNewMessage = (message) => {
-      console.log('💬 New message:', message);
-      setMessages(prev => [...prev, message]);
-    };
-
-    const onVideoPlay = (data) => {
-      console.log('▶️ Video play event:', data);
-      if (videoRef.current && !isSyncing) {
-        setIsSyncing(true);
-        videoRef.current.currentTime = data.currentTime;
-        videoRef.current.play().catch(console.error);
-        setIsPlaying(true);
-        setTimeout(() => setIsSyncing(false), 500);
-      }
-    };
-
-    const onVideoPause = (data) => {
-      console.log('⏸️ Video pause event:', data);
-      if (videoRef.current && !isSyncing) {
-        setIsSyncing(true);
-        videoRef.current.currentTime = data.currentTime;
-        videoRef.current.pause();
-        setIsPlaying(false);
-        setTimeout(() => setIsSyncing(false), 500);
-      }
-    };
-
-    const onVideoSeek = (data) => {
-      console.log('⏭️ Video seek event:', data);
-      if (videoRef.current && !isSyncing) {
-        setIsSyncing(true);
-        videoRef.current.currentTime = data.currentTime;
-        setTimeout(() => setIsSyncing(false), 500);
-      }
-    };
-
-    const onError = (error) => {
-      console.error('🔥 Socket error:', error);
-    };
-
-    // Add event listeners
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.on('room-state', onRoomState);
-    socket.on('user-joined', onUserJoined);
-    socket.on('user-left', onUserLeft);
-    socket.on('new-message', onNewMessage);
-    socket.on('video-play', onVideoPlay);
-    socket.on('video-pause', onVideoPause);
-    socket.on('video-seek', onVideoSeek);
-    socket.on('error', onError);
-
-    // If already connected, join room immediately
-    if (socket.connected) {
-      joinRoom();
-    }
-
-    // Cleanup function
+    // Component cleanup function
     return () => {
       console.log('🧹 Cleaning up room connections...');
-      socket.emit('leave-room', roomCode);
+      isComponentMounted = false;
       
-      // Remove event listeners
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('room-state', onRoomState);
-      socket.off('user-joined', onUserJoined);
-      socket.off('user-left', onUserLeft);
-      socket.off('new-message', onNewMessage);
-      socket.off('video-play', onVideoPlay);
-      socket.off('video-pause', onVideoPause);
-      socket.off('video-seek', onVideoSeek);
-      socket.off('error', onError);
+      if (socket.connected) {
+        socket.emit('leave-room', roomCode);
+      }
+      
+      // Clean up listeners
+      if (cleanupListeners) {
+        cleanupListeners();
+      }
     };
-  }, [roomCode, userName]); // Removed isSyncing from dependencies
-
-  const handlePlay = () => {
+  }, [roomCode, userName, navigate]);  const handlePlay = () => {
     if (!isSyncing && videoRef.current) {
       socket.emit('video-play', {
         roomCode,

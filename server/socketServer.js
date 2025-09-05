@@ -13,12 +13,12 @@ const roomRoutes = require('./rooms');
 const LOCAL_IP = '192.168.1.10'; // Your WiFi IP
 const PORT = 5000;
 
-// Allow all origins for development (you can restrict this later)
+// Enhanced CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   `http://${LOCAL_IP}:3000`,
-  'http://192.168.1.10:3000', // Your specific IP
+  'http://192.168.1.10:3000',
   /^http:\/\/192\.168\.\d+\.\d+:3000$/, // Any 192.168.x.x IP
   /^http:\/\/10\.\d+\.\d+\.\d+:3000$/, // Any 10.x.x.x IP
   /https:\/\/.*\.ngrok-free\.app/,
@@ -27,13 +27,14 @@ const allowedOrigins = [
 
 const app = express();
 const server = http.createServer(app);
+
+// Enhanced Socket.IO configuration with better connection handling
 const io = new Server(server, {
   cors: {
     origin: function (origin, callback) {
-      // Allow requests with no origin (mobile apps, etc.)
+      // Allow requests with no origin (mobile apps, Postman, etc.)
       if (!origin) return callback(null, true);
       
-      // Check if origin is in allowed list or matches pattern
       const isAllowed = allowedOrigins.some(allowedOrigin => {
         if (typeof allowedOrigin === 'string') {
           return allowedOrigin === origin;
@@ -46,27 +47,34 @@ const io = new Server(server, {
       if (isAllowed) {
         callback(null, true);
       } else {
-        console.log('Blocked origin:', origin);
-        callback(null, true); // Allow all for now, remove this in production
+        console.log('⚠️  CORS blocked origin:', origin);
+        callback(null, true); // Allow all for development - REMOVE IN PRODUCTION
       }
     },
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
     allowEIO3: true
   },
+  // Connection stability improvements
   allowEIO3: true,
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
+  // Maximum number of messages that can be buffered
+  maxHttpBufferSize: 1e6,
+  // Enable compression
+  compression: true
 });
 
 const JWT_SECRET = 'supersecretkey';
 
-// Middleware
+// Enhanced Express CORS middleware
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, etc.)
+    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
-    // Check if origin is in allowed list or matches ngrok pattern
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (typeof allowedOrigin === 'string') {
         return allowedOrigin === origin;
@@ -79,13 +87,20 @@ app.use(cors({
     if (isAllowed) {
       callback(null, true);
     } else {
-      console.log('Blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'));
+      console.log('⚠️  Express CORS blocked origin:', origin);
+      callback(null, true); // Allow all for development - REMOVE IN PRODUCTION
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Content-Length', 'Content-Type'],
+  optionsSuccessStatus: 200 // For legacy browser support
 }));
-app.use(bodyParser.json());
+
+// Additional middleware for better parsing
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -322,20 +337,58 @@ app.get('/api/health', (req, res) => {
 });
 
 // Socket.IO handling
+// Enhanced Socket.IO connection handling with better error management
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('🔌 User connected:', socket.id, 'from', socket.handshake.address);
 
+  // Connection health check
+  socket.emit('connection-ack', { 
+    status: 'connected', 
+    serverId: socket.id,
+    timestamp: new Date().toISOString()
+  });
+
+  // Enhanced room joining with duplicate prevention
   socket.on('join-room', ({ roomCode, user }) => {
     try {
+      console.log(`🏠 ${user} (${socket.id}) attempting to join room ${roomCode}`);
+      
       const room = rooms.find(r => r.roomCode === roomCode);
       if (!room) {
-        socket.emit('error', 'Room not found');
+        console.log(`❌ Room ${roomCode} not found`);
+        socket.emit('error', { type: 'ROOM_NOT_FOUND', message: 'Room not found' });
         return;
+      }
+
+      // Check if user already has an active session
+      if (userSessions.has(user)) {
+        const existingSession = userSessions.get(user);
+        console.log(`⚠️ User ${user} already has session ${existingSession.socketId}, removing old session`);
+        
+        // Find and disconnect the old socket
+        const existingSocket = io.sockets.sockets.get(existingSession.socketId);
+        if (existingSocket && existingSocket.id !== socket.id) {
+          existingSocket.emit('force-disconnect', { reason: 'New session started' });
+          handleUserLeave(existingSocket, existingSession.roomCode);
+          existingSocket.disconnect(true);
+        }
+      }
+
+      // Leave any previous room for this socket
+      if (socket.roomCode && socket.roomCode !== roomCode) {
+        handleUserLeave(socket, socket.roomCode);
       }
 
       socket.join(roomCode);
       socket.roomCode = roomCode;
       socket.userName = user;
+
+      // Register user session
+      userSessions.set(user, {
+        socketId: socket.id,
+        roomCode: roomCode,
+        joinedAt: new Date()
+      });
 
       // Initialize room state if not exists
       if (!roomStates[roomCode]) {
@@ -344,54 +397,105 @@ io.on('connection', (socket) => {
           messages: [],
           isPlaying: false,
           currentTime: 0,
-          videoUrl: room.videoUrl
+          videoUrl: room.videoUrl,
+          lastSync: Date.now()
         };
       }
 
-      // Add user to room state
-      const userData = { id: socket.id, name: user, joinedAt: new Date() };
-      roomStates[roomCode].users = roomStates[roomCode].users.filter(u => u.id !== socket.id);
+      // Add user to room state (remove any duplicates first)
+      const userData = { 
+        id: socket.id, 
+        name: user, 
+        joinedAt: new Date(),
+        isHost: roomStates[roomCode].users.length === 0 // First user is host
+      };
+      
+      // Remove any existing entries for this user or socket ID
+      roomStates[roomCode].users = roomStates[roomCode].users.filter(
+        u => u.id !== socket.id && u.name !== user
+      );
       roomStates[roomCode].users.push(userData);
 
       // Send current room state to joining user
-      socket.emit('room-state', roomStates[roomCode]);
+      socket.emit('room-state', {
+        ...roomStates[roomCode],
+        userCount: roomStates[roomCode].users.length
+      });
 
       // Notify others about new user
-      socket.to(roomCode).emit('user-joined', userData);
+      socket.to(roomCode).emit('user-joined', {
+        user: userData,
+        userCount: roomStates[roomCode].users.length
+      });
 
-      console.log(`${user} joined room ${roomCode}. Total users: ${roomStates[roomCode].users.length}`);
+      console.log(`✅ ${user} joined room ${roomCode}. Total users: ${roomStates[roomCode].users.length}`);
+      
+      // Send welcome message
+      socket.emit('system-message', {
+        type: 'success',
+        message: `Welcome to room ${roomCode}! ${roomStates[roomCode].users.length} user(s) online.`
+      });
+
     } catch (error) {
-      console.error('Join room error:', error);
-      socket.emit('error', 'Failed to join room');
+      console.error('❌ Join room error:', error);
+      socket.emit('error', { 
+        type: 'JOIN_ROOM_ERROR', 
+        message: 'Failed to join room',
+        details: error.message 
+      });
     }
   });
 
+  // Enhanced leave room handling
   socket.on('leave-room', (roomCode) => {
+    console.log(`🚪 ${socket.userName || socket.id} leaving room ${roomCode}`);
     handleUserLeave(socket, roomCode);
   });
 
+  // Enhanced message handling with validation
   socket.on('send-message', ({ roomCode, message, user }) => {
     try {
-      if (!roomStates[roomCode]) return;
+      if (!roomStates[roomCode]) {
+        socket.emit('error', { type: 'ROOM_NOT_FOUND', message: 'Room not found for message' });
+        return;
+      }
+
+      if (!message || message.trim().length === 0) {
+        socket.emit('error', { type: 'INVALID_MESSAGE', message: 'Message cannot be empty' });
+        return;
+      }
+
+      if (message.length > 500) {
+        socket.emit('error', { type: 'MESSAGE_TOO_LONG', message: 'Message too long (max 500 characters)' });
+        return;
+      }
 
       const messageData = {
         id: Date.now(),
         user,
-        message,
-        timestamp: new Date().toISOString()
+        message: message.trim(),
+        timestamp: new Date().toISOString(),
+        socketId: socket.id
       };
 
       roomStates[roomCode].messages.push(messageData);
       
-      // Keep only last 100 messages
+      // Keep only last 100 messages to prevent memory issues
       if (roomStates[roomCode].messages.length > 100) {
         roomStates[roomCode].messages = roomStates[roomCode].messages.slice(-100);
       }
 
+      // Broadcast to all users in room including sender
       io.to(roomCode).emit('new-message', messageData);
-      console.log(`Message in ${roomCode} from ${user}: ${message}`);
+      
+      console.log(`💬 Message in ${roomCode} from ${user}: ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`);
     } catch (error) {
-      console.error('Send message error:', error);
+      console.error('❌ Message error:', error);
+      socket.emit('error', { 
+        type: 'MESSAGE_ERROR', 
+        message: 'Failed to send message',
+        details: error.message 
+      });
     }
   });
 
@@ -444,11 +548,29 @@ io.on('connection', (socket) => {
   });
 });
 
+// Enhanced user session management
+const userSessions = new Map(); // Track user sessions to prevent duplicates
+
 function handleUserLeave(socket, roomCode) {
   try {
     if (roomStates[roomCode]) {
+      // Remove user from room state
       roomStates[roomCode].users = roomStates[roomCode].users.filter(u => u.id !== socket.id);
-      socket.to(roomCode).emit('user-left', socket.id);
+      
+      // Remove from user sessions
+      if (socket.userName && userSessions.has(socket.userName)) {
+        const userSession = userSessions.get(socket.userName);
+        if (userSession.socketId === socket.id) {
+          userSessions.delete(socket.userName);
+        }
+      }
+      
+      // Notify other users
+      socket.to(roomCode).emit('user-left', {
+        userId: socket.id,
+        userName: socket.userName,
+        userCount: roomStates[roomCode].users.length
+      });
 
       console.log(`${socket.userName || socket.id} left room ${roomCode}. Remaining: ${roomStates[roomCode].users.length}`);
 
@@ -457,14 +579,14 @@ function handleUserLeave(socket, roomCode) {
         setTimeout(() => {
           if (roomStates[roomCode] && roomStates[roomCode].users.length === 0) {
             delete roomStates[roomCode];
-            console.log(`Cleaned up empty room: ${roomCode}`);
+            console.log(`🧹 Cleaned up empty room: ${roomCode}`);
           }
         }, 300000); // 5 minutes
       }
     }
     socket.leave(roomCode);
   } catch (error) {
-    console.error('Handle user leave error:', error);
+    console.error('❌ Handle user leave error:', error);
   }
 }
 

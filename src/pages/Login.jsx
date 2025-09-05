@@ -1,7 +1,11 @@
 import React, { useState, useContext } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import AuthContext from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { loginUser } from '../utils/api';
+import Button from '../components/Button';
+import Input from '../components/Input';
+import Card from '../components/Card';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -9,6 +13,7 @@ const Login = () => {
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useContext(AuthContext);
+  const { colors } = useTheme();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -42,84 +47,131 @@ const Login = () => {
 
   return (
     <div style={{ 
-      padding: '40px', 
-      maxWidth: '400px', 
-      margin: '0 auto',
-      background: '#1a1a1a',
-      color: '#fff',
-      borderRadius: '10px',
-      marginTop: '100px'
+      backgroundColor: colors.background,
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '24px'
     }}>
-      <h2 style={{ textAlign: 'center', marginBottom: '30px' }}>Login to CineSync</h2>
-      
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', marginBottom: '8px' }}>Email:</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            disabled={isLoading}
-            style={{
-              width: '100%',
-              padding: '12px',
-              borderRadius: '6px',
-              border: 'none',
-              backgroundColor: '#333',
-              color: '#fff'
-            }}
-          />
-        </div>
-        
-        <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', marginBottom: '8px' }}>Password:</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            disabled={isLoading}
-            style={{
-              width: '100%',
-              padding: '12px',
-              borderRadius: '6px',
-              border: 'none',
-              backgroundColor: '#333',
-              color: '#fff'
-            }}
-          />
-        </div>
-        
-        <button
-          type="submit"
-          disabled={isLoading}
+      <Card style={{
+        width: '100%',
+        maxWidth: '400px',
+        padding: '48px',
+        background: colors.card,
+        border: `1px solid ${colors.border}`,
+        textAlign: 'center'
+      }}>
+        {/* Logo */}
+        <img 
+          src="/logo.png" 
+          alt="CineSync Logo" 
           style={{
-            width: '100%',
-            padding: '15px',
-            backgroundColor: isLoading ? '#666' : '#4caf50',
+            height: '80px',
+            width: '80px',
+            marginBottom: '24px',
+            borderRadius: '16px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.2)'
+          }}
+        />
+        
+        <h1 style={{ 
+          color: colors.text, 
+          marginBottom: '8px',
+          fontSize: '2rem',
+          fontWeight: '700'
+        }}>
+          Welcome Back
+        </h1>
+        
+        <p style={{ 
+          color: colors.textSecondary, 
+          marginBottom: '32px',
+          fontSize: '16px'
+        }}>
+          Sign in to continue your movie experience
+        </p>
+        
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: '24px' }}>
+            <Input
+              type="email"
+              placeholder="Enter your email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              disabled={isLoading}
+              style={{ textAlign: 'left' }}
+            />
+          </div>
+          
+          <div style={{ marginBottom: '32px' }}>
+            <Input
+              type="password"
+              placeholder="Enter your password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={isLoading}
+              style={{ textAlign: 'left' }}
+            />
+          </div>
+          
+          <Button
+            type="submit"
+            disabled={isLoading}
+            style={{
+              width: '100%',
+              marginBottom: '24px',
+              fontSize: '16px',
+              padding: '16px'
+            }}
+          >
+            {isLoading ? '🔄 Signing in...' : '🔑 Sign In'}
+          </Button>
+        </form>
+        
+        {message && (
+          <div style={{
+            marginBottom: '24px',
+            padding: '16px',
+            backgroundColor: message.includes('successful') ? '#10b981' : '#ef4444',
             color: '#fff',
-            border: 'none',
-            borderRadius: '6px',
-            fontSize: '16px',
-            cursor: isLoading ? 'not-allowed' : 'pointer'
+            borderRadius: '8px',
+            fontSize: '14px'
+          }}>
+            {message}
+          </div>
+        )}
+        
+        <div style={{ 
+          borderTop: `1px solid ${colors.border}`, 
+          paddingTop: '24px',
+          color: colors.textSecondary
+        }}>
+          <p style={{ marginBottom: '16px' }}>
+            Don't have an account?
+          </p>
+          <Link to="/signup">
+            <Button variant="secondary" style={{ width: '100%' }}>
+              🚀 Create Account
+            </Button>
+          </Link>
+        </div>
+        
+        <Link 
+          to="/" 
+          style={{ 
+            display: 'inline-block',
+            marginTop: '24px',
+            color: colors.textSecondary,
+            textDecoration: 'none',
+            fontSize: '14px'
           }}
         >
-          {isLoading ? 'Logging in...' : 'Login'}
-        </button>
-      </form>
-      
-      {message && (
-        <div style={{
-          marginTop: '20px',
-          padding: '12px',
-          backgroundColor: message.includes('successful') ? '#4caf50' : '#f44336',
-          borderRadius: '6px',
-          textAlign: 'center'
-        }}>
-          {message}
-        </div>
-      )}
+          ← Back to Home
+        </Link>
+      </Card>
     </div>
   );
 };
