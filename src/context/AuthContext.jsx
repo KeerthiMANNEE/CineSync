@@ -4,30 +4,53 @@ const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Check for existing token on component mount
+    const token = localStorage.getItem('token');
     if (token) {
-      // Optionally fetch user info with token
-      setUser({ token });
-    } else {
-      setUser(null);
+      try {
+        // Decode the token to get user info (simple JWT decode)
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        setUser({ email: payload.email, token });
+        console.log('User loaded from token:', payload.email);
+      } catch (error) {
+        console.error('Invalid token:', error);
+        localStorage.removeItem('token');
+      }
     }
-  }, [token]);
+    setIsLoading(false);
+  }, []);
 
   const login = (token) => {
-    localStorage.setItem('token', token);
-    setToken(token);
+    try {
+      localStorage.setItem('token', token);
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      setUser({ email: payload.email, token });
+      console.log('User logged in:', payload.email);
+      return true;
+    } catch (error) {
+      console.error('Login error:', error);
+      return false;
+    }
   };
 
   const logout = () => {
     localStorage.removeItem('token');
-    setToken(null);
     setUser(null);
+    console.log('User logged out');
+  };
+
+  const value = {
+    user,
+    login,
+    logout,
+    isLoading
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

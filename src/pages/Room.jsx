@@ -1,125 +1,440 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
-import socket from '../utils/socket';
-
+import React, { useState, useEffect, useContext, useRef } from 'react';
+import { useParams, useLocation } from 'react-router-dom';
+import AuthContext from '../context/AuthContext';
+import { socket } from '../utils/socket';
 
 const Room = () => {
+  const { roomCode } = useParams();
   const location = useLocation();
-  const { roomCode, roomName } = location.state || {};
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
+  const { user } = useContext(AuthContext);
   const videoRef = useRef(null);
+  
+  const [users, setUsers] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isConnected, setIsConnected] = useState(false);
+  const [roomData, setRoomData] = useState(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const userName = user?.email || 'Anonymous';
 
   useEffect(() => {
-    socket.connect();
-    socket.emit('joinRoom', { roomCode });
+    console.log('🔌 Room component mounted, connecting to socket...');
+    
+    // Set initial connection status
+    setIsConnected(socket.connected);
+    
+    // Join room only once
+    const joinRoom = () => {
+      console.log('👋 Joining room:', roomCode, 'as:', userName);
+      socket.emit('join-room', {
+        roomCode,
+        user: userName
+      });
+    };
 
-    socket.on('videoAction', ({ action, time }) => {
-      if (videoRef.current) {
-        if (action === 'play') {
-          videoRef.current.currentTime = time;
-          videoRef.current.play();
-        } else if (action === 'pause') {
-          videoRef.current.currentTime = time;
+    // Socket event listeners
+    const onConnect = () => {
+      console.log('✅ Connected to server');
+      setIsConnected(true);
+      joinRoom(); // Join room when connected
+    };
+    
+    const onDisconnect = (reason) => {
+      console.log('❌ Disconnected from server, reason:', reason);
+      setIsConnected(false);
+    };
+    
+    const onRoomState = (state) => {
+      console.log('📊 Received room state:', state);
+      setRoomData(state);
+      setUsers(state.users || []);
+      setMessages(state.messages || []);
+      
+      if (videoRef.current && state.currentTime !== undefined) {
+        setIsSyncing(true);
+        videoRef.current.currentTime = state.currentTime;
+        if (state.isPlaying) {
+          videoRef.current.play().catch(console.error);
+        } else {
           videoRef.current.pause();
         }
+        setIsPlaying(state.isPlaying);
+        setTimeout(() => setIsSyncing(false), 500);
       }
-    });
-
-    socket.on('chatMessage', ({ message }) => {
-      setMessages((msgs) => [...msgs, { text: message, sender: 'Other' }]);
-    });
-
-    socket.on('reaction', ({ emoji }) => {
-      setMessages((msgs) => [...msgs, { text: emoji, sender: 'Reaction' }]);
-    });
-
-    return () => {
-      socket.disconnect();
-      socket.off('videoAction');
-      socket.off('chatMessage');
-      socket.off('reaction');
     };
-  }, [roomCode]);
+
+    const onUserJoined = (userData) => {
+      console.log('👤 User joined:', userData);
+      setUsers(prev => {
+        const exists = prev.find(u => u.id === userData.id);
+        return exists ? prev : [...prev, userData];
+      });
+    };
+
+    const onUserLeft = (userId) => {
+      console.log('👋 User left:', userId);
+      setUsers(prev => prev.filter(u => u.id !== userId));
+    };
+
+    const onNewMessage = (message) => {
+      console.log('💬 New message:', message);
+      setMessages(prev => [...prev, message]);
+    };
+
+    const onVideoPlay = (data) => {
+      console.log('▶️ Video play event:', data);
+      if (videoRef.current && !isSyncing) {
+        setIsSyncing(true);
+        videoRef.current.currentTime = data.currentTime;
+        videoRef.current.play().catch(console.error);
+        setIsPlaying(true);
+        setTimeout(() => setIsSyncing(false), 500);
+      }
+    };
+
+    const onVideoPause = (data) => {
+      console.log('⏸️ Video pause event:', data);
+      if (videoRef.current && !isSyncing) {
+        setIsSyncing(true);
+        videoRef.current.currentTime = data.currentTime;
+        videoRef.current.pause();
+        setIsPlaying(false);
+        setTimeout(() => setIsSyncing(false), 500);
+      }
+    };
+
+    const onVideoSeek = (data) => {
+      console.log('⏭️ Video seek event:', data);
+      if (videoRef.current && !isSyncing) {
+        setIsSyncing(true);
+        videoRef.current.currentTime = data.currentTime;
+        setTimeout(() => setIsSyncing(false), 500);
+      }
+    };
+
+    const onError = (error) => {
+      console.error('🔥 Socket error:', error);
+    };
+
+    // Add event listeners
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('room-state', onRoomState);
+    socket.on('user-joined', onUserJoined);
+    socket.on('user-left', onUserLeft);
+    socket.on('new-message', onNewMessage);
+    socket.on('video-play', onVideoPlay);
+    socket.on('video-pause', onVideoPause);
+    socket.on('video-seek', onVideoSeek);
+    socket.on('error', onError);
+
+    // If already connected, join room immediately
+    if (socket.connected) {
+      joinRoom();
+    }
+
+    // Cleanup function
+    return () => {
+      console.log('🧹 Cleaning up room connections...');
+      socket.emit('leave-room', roomCode);
+      
+      // Remove event listeners
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('room-state', onRoomState);
+      socket.off('user-joined', onUserJoined);
+      socket.off('user-left', onUserLeft);
+      socket.off('new-message', onNewMessage);
+      socket.off('video-play', onVideoPlay);
+      socket.off('video-pause', onVideoPause);
+      socket.off('video-seek', onVideoSeek);
+      socket.off('error', onError);
+    };
+  }, [roomCode, userName]); // Removed isSyncing from dependencies
+
+  const handlePlay = () => {
+    if (!isSyncing && videoRef.current) {
+      socket.emit('video-play', {
+        roomCode,
+        currentTime: videoRef.current.currentTime
+      });
+    }
+  };
+
+  const handlePause = () => {
+    if (!isSyncing && videoRef.current) {
+      socket.emit('video-pause', {
+        roomCode,
+        currentTime: videoRef.current.currentTime
+      });
+    }
+  };
+
+  const handleSeek = () => {
+    if (!isSyncing && videoRef.current) {
+      socket.emit('video-seek', {
+        roomCode,
+        currentTime: videoRef.current.currentTime
+      });
+    }
+  };
 
   const sendMessage = (e) => {
     e.preventDefault();
-    if (input.trim()) {
-      setMessages([...messages, { text: input, sender: 'You' }]);
-      socket.emit('chatMessage', { roomCode, message: input });
-      setInput('');
+    if (newMessage.trim()) {
+      socket.emit('send-message', {
+        roomCode,
+        message: newMessage,
+        user: userName
+      });
+      setNewMessage('');
     }
   };
 
-  const handlePlay = () => {
-    if (videoRef.current) {
-      socket.emit('videoAction', { roomCode, action: 'play', time: videoRef.current.currentTime });
-      videoRef.current.play();
-    }
-  };
-  const handlePause = () => {
-    if (videoRef.current) {
-      socket.emit('videoAction', { roomCode, action: 'pause', time: videoRef.current.currentTime });
-      videoRef.current.pause();
-    }
-  };
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
 
-  const sendReaction = (emoji) => {
-    setMessages([...messages, { text: emoji, sender: 'Reaction' }]);
-    socket.emit('reaction', { roomCode, emoji });
-  };
+    // Disable picture-in-picture to avoid the error
+    if ('disablePictureInPicture' in video) {
+      video.disablePictureInPicture = true;
+    }
+
+    // Set video properties for better network compatibility
+    video.crossOrigin = 'anonymous';
+    video.preload = 'metadata';
+    
+    // Handle video load errors
+    const handleError = (e) => {
+      console.error('Video error:', e);
+      console.error('Video error details:', {
+        error: video.error,
+        networkState: video.networkState,
+        readyState: video.readyState,
+        currentSrc: video.currentSrc
+      });
+    };
+
+    const handleLoadStart = () => {
+      console.log('Video load started');
+    };
+
+    const handleCanPlay = () => {
+      console.log('Video can play');
+    };
+
+    video.addEventListener('error', handleError);
+    video.addEventListener('loadstart', handleLoadStart);
+    video.addEventListener('canplay', handleCanPlay);
+
+    return () => {
+      video.removeEventListener('error', handleError);
+      video.removeEventListener('loadstart', handleLoadStart);
+      video.removeEventListener('canplay', handleCanPlay);
+    };
+  }, []);
+
+  // Replace the video source handling
+  useEffect(() => {
+    if (videoRef.current && roomData?.videoUrl) {
+      const video = videoRef.current;
+      
+      // Create full URL for video
+      const getVideoUrl = () => {
+        const hostname = window.location.hostname;
+        const protocol = window.location.protocol;
+        
+        if (hostname === 'localhost' || hostname === '127.0.0.1') {
+          return `http://localhost:5000${roomData.videoUrl}`;
+        }
+        
+        if (hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+          return `${protocol}//${hostname}:5000${roomData.videoUrl}`;
+        }
+        
+        return `http://localhost:5000${roomData.videoUrl}`;
+      };
+      
+      const fullVideoUrl = getVideoUrl();
+      console.log('Setting video source to:', fullVideoUrl);
+      
+      video.src = fullVideoUrl;
+      video.load(); // Force reload
+    }
+  }, [roomData]);
 
   return (
-    <div className="room-container" style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', background: 'linear-gradient(135deg, #232526 0%, #414345 100%)',
-    }}>
-      <div style={{ margin: '2rem 0', textAlign: 'center' }}>
-        <h2 style={{ fontSize: '2.2rem', color: '#fff', fontWeight: '700', marginBottom: '0.5rem' }}>Room: {roomName || 'Movie Night'}</h2>
-        <div style={{ fontSize: '1.1rem', color: '#ffe082', marginBottom: '1rem' }}>Code: {roomCode || 'N/A'} <button style={{ marginLeft: '1rem', padding: '0.3rem 0.8rem', borderRadius: '8px', background: '#ffe082', color: '#232526', fontWeight: '600', border: 'none', cursor: 'pointer' }} onClick={() => navigator.clipboard.writeText(roomCode)}>Copy</button></div>
-      </div>
-      <div style={{ display: 'flex', gap: '2.5rem', width: '90%', maxWidth: '1200px', justifyContent: 'center' }}>
-        {/* Video Player */}
-        <div style={{ flex: 2, background: 'rgba(255,255,255,0.07)', borderRadius: '18px', padding: '2rem', boxShadow: '0 4px 24px rgba(0,0,0,0.12)' }}>
-          <video ref={videoRef} width="100%" height="auto" controls style={{ borderRadius: '12px', background: '#000' }}>
-            <source src="" type="video/mp4" />
-            Your browser does not support the video tag.
+    <div style={{ display: 'flex', height: '100vh', background: '#1a1a1a', color: '#fff' }}>
+      {/* Video Section */}
+      <div style={{ flex: 2, padding: '20px' }}>
+        <div style={{ marginBottom: '20px' }}>
+          <h2 style={{ margin: '0 0 10px 0' }}>Room: {roomCode}</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <span style={{ 
+              color: isConnected ? '#4caf50' : '#f44336',
+              fontSize: '14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px'
+            }}>
+              <span style={{ fontSize: '12px' }}>●</span>
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+            {isSyncing && (
+              <span style={{ color: '#ff9800', fontSize: '14px' }}>
+                🔄 Syncing...
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {roomData?.videoUrl ? (
+          <video
+            ref={videoRef}
+            width="100%"
+            height="400px"
+            controls
+            onPlay={handlePlay}
+            onPause={handlePause}
+            onSeeked={handleSeek}
+            style={{ borderRadius: '8px', backgroundColor: '#000' }}
+          >
+            <source src={`http://localhost:5000${roomData.videoUrl}`} type="video/mp4" />
+            Your browser does not support video playback.
           </video>
-          <div style={{ marginTop: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-            <button onClick={handlePlay} style={{ fontSize: '1.2rem', padding: '0.7rem 1.5rem', borderRadius: '24px', background: '#ff512f', color: '#fff', border: 'none', fontWeight: '600', cursor: 'pointer' }}>Play</button>
-            <button onClick={handlePause} style={{ fontSize: '1.2rem', padding: '0.7rem 1.5rem', borderRadius: '24px', background: '#dd2476', color: '#fff', border: 'none', fontWeight: '600', cursor: 'pointer' }}>Pause</button>
-          </div>
-        </div>
-        {/* Chat & Reactions */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          <div style={{ background: 'rgba(255,255,255,0.09)', borderRadius: '18px', padding: '1.5rem', boxShadow: '0 2px 12px rgba(0,0,0,0.10)', minHeight: '300px', maxHeight: '350px', overflowY: 'auto' }}>
-            <h3 style={{ color: '#fff', fontWeight: '600', marginBottom: '1rem' }}>Chat</h3>
-            <div>
-              {messages.map((msg, idx) => (
-                <div key={idx} style={{ marginBottom: '0.7rem', textAlign: msg.sender === 'You' ? 'right' : 'left' }}>
-                  <span style={{
-                    display: 'inline-block',
-                    background: msg.sender === 'You' ? '#ff512f' : '#ffe082',
-                    color: msg.sender === 'You' ? '#fff' : '#232526',
-                    borderRadius: '16px',
-                    padding: '0.5rem 1rem',
-                    fontWeight: '500',
-                    fontSize: '1rem',
-                  }}>{msg.text}</span>
-                </div>
-              ))}
+        ) : (
+          <div style={{
+            width: '100%',
+            height: '400px',
+            background: '#333',
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexDirection: 'column',
+            gap: '10px'
+          }}>
+            <div style={{ fontSize: '48px' }}>🎬</div>
+            <div>No video uploaded for this room</div>
+            <div style={{ fontSize: '14px', color: '#888' }}>
+              Create a new room with a video file to start watching together
             </div>
-            <form onSubmit={sendMessage} style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-              <input value={input} onChange={e => setInput(e.target.value)} placeholder="Type a message..." style={{ flex: 1, padding: '0.7rem', borderRadius: '12px', border: 'none', fontSize: '1rem', background: '#232526', color: '#fff' }} />
-              <button type="submit" style={{ padding: '0.7rem 1.2rem', borderRadius: '12px', background: '#ffe082', color: '#232526', fontWeight: '600', border: 'none', cursor: 'pointer' }}>Send</button>
-            </form>
           </div>
-          <div style={{ background: 'rgba(255,255,255,0.09)', borderRadius: '18px', padding: '1rem', boxShadow: '0 2px 12px rgba(0,0,0,0.10)', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-            <button onClick={() => sendReaction('👍')} style={{ fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}>👍</button>
-            <button onClick={() => sendReaction('😂')} style={{ fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}>😂</button>
-            <button onClick={() => sendReaction('😍')} style={{ fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}>😍</button>
-            <button onClick={() => sendReaction('👏')} style={{ fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer' }}>👏</button>
+        )}
+      </div>
+
+      {/* Chat & Users Section */}
+      <div style={{ 
+        flex: 1, 
+        background: '#2a2a2a', 
+        display: 'flex', 
+        flexDirection: 'column',
+        borderLeft: '1px solid #444'
+      }}>
+        {/* Users List */}
+        <div style={{ padding: '20px', borderBottom: '1px solid #444' }}>
+          <h3 style={{ margin: '0 0 15px 0', fontSize: '18px' }}>
+            Online Users ({users.length})
+          </h3>
+          <div style={{ maxHeight: '120px', overflowY: 'auto' }}>
+            {users.map((user, index) => (
+              <div key={index} style={{ 
+                color: '#ccc', 
+                marginBottom: '8px',
+                padding: '5px 8px',
+                background: '#333',
+                borderRadius: '4px',
+                fontSize: '14px'
+              }}>
+                <span style={{ color: '#4caf50', marginRight: '8px' }}>●</span>
+                {user.name || user}
+              </div>
+            ))}
           </div>
         </div>
+
+        {/* Chat Messages */}
+        <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column' }}>
+          <h3 style={{ margin: '0 0 15px 0', fontSize: '18px' }}>Chat</h3>
+          <div style={{ 
+            flex: 1, 
+            overflowY: 'auto', 
+            marginBottom: '15px',
+            minHeight: '200px'
+          }}>
+            {messages.length === 0 ? (
+              <div style={{ color: '#888', textAlign: 'center', marginTop: '40px' }}>
+                No messages yet. Start the conversation!
+              </div>
+            ) : (
+              messages.map((msg, index) => (
+                <div key={index} style={{ 
+                  marginBottom: '12px',
+                  padding: '10px',
+                  background: '#333',
+                  borderRadius: '8px',
+                  fontSize: '14px'
+                }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between',
+                    marginBottom: '5px'
+                  }}>
+                    <strong style={{ color: '#4caf50' }}>{msg.user}</strong>
+                    <small style={{ color: '#888', fontSize: '12px' }}>
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </small>
+                  </div>
+                  <div style={{ lineHeight: '1.4' }}>{msg.message}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Message Input */}
+        <form onSubmit={sendMessage} style={{ 
+          padding: '20px',
+          borderTop: '1px solid #444',
+          display: 'flex',
+          gap: '10px'
+        }}>
+          <input
+            type="text"
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            placeholder="Type a message..."
+            disabled={!isConnected}
+            style={{
+              flex: 1,
+              padding: '10px',
+              borderRadius: '6px',
+              border: 'none',
+              background: '#333',
+              color: '#fff',
+              fontSize: '14px',
+              outline: 'none'
+            }}
+          />
+          <button 
+            type="submit" 
+            disabled={!isConnected || !newMessage.trim()}
+            style={{
+              padding: '10px 15px',
+              borderRadius: '6px',
+              border: 'none',
+              background: (!isConnected || !newMessage.trim()) ? '#666' : '#4caf50',
+              color: '#fff',
+              cursor: (!isConnected || !newMessage.trim()) ? 'not-allowed' : 'pointer',
+              fontSize: '14px'
+            }}
+          >
+            Send
+          </button>
+        </form>
       </div>
     </div>
   );

@@ -4,53 +4,122 @@ import AuthContext from '../context/AuthContext';
 import { loginUser } from '../utils/api';
 
 const Login = () => {
-  const { login } = useContext(AuthContext);
-  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [message, setMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const { login } = useContext(AuthContext);
+  const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
+    setIsLoading(true);
+    setMessage('');
+
     try {
-      const token = await loginUser(email, password);
-      if (token) {
-        login(token);
-        setSuccess('Login successful! You are now logged in.');
-        setTimeout(() => navigate('/dashboard'), 1000);
+      const result = await loginUser(email, password);
+      
+      if (result.success) {
+        const loginSuccess = login(result.token);
+        if (loginSuccess) {
+          setMessage('Login successful! Redirecting...');
+          setTimeout(() => {
+            navigate('/dashboard');
+          }, 1000);
+        } else {
+          setMessage('Login failed. Please try again.');
+        }
       } else {
-        setError('Invalid credentials');
+        setMessage(result.error || 'Login failed');
       }
-    } catch (err) {
-      setError('Login failed');
+    } catch (error) {
+      console.error('Login error:', error);
+      setMessage('Network error. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="login-container">
-      <h2>Login</h2>
+    <div style={{ 
+      padding: '40px', 
+      maxWidth: '400px', 
+      margin: '0 auto',
+      background: '#1a1a1a',
+      color: '#fff',
+      borderRadius: '10px',
+      marginTop: '100px'
+    }}>
+      <h2 style={{ textAlign: 'center', marginBottom: '30px' }}>Login to CineSync</h2>
+      
       <form onSubmit={handleSubmit}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <button type="submit">Login</button>
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '8px' }}>Email:</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            disabled={isLoading}
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '6px',
+              border: 'none',
+              backgroundColor: '#333',
+              color: '#fff'
+            }}
+          />
+        </div>
+        
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '8px' }}>Password:</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            disabled={isLoading}
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '6px',
+              border: 'none',
+              backgroundColor: '#333',
+              color: '#fff'
+            }}
+          />
+        </div>
+        
+        <button
+          type="submit"
+          disabled={isLoading}
+          style={{
+            width: '100%',
+            padding: '15px',
+            backgroundColor: isLoading ? '#666' : '#4caf50',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '6px',
+            fontSize: '16px',
+            cursor: isLoading ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {isLoading ? 'Logging in...' : 'Login'}
+        </button>
       </form>
-  {success && <p className="success">{success}</p>}
-  {error && <p className="error">{error}</p>}
+      
+      {message && (
+        <div style={{
+          marginTop: '20px',
+          padding: '12px',
+          backgroundColor: message.includes('successful') ? '#4caf50' : '#f44336',
+          borderRadius: '6px',
+          textAlign: 'center'
+        }}>
+          {message}
+        </div>
+      )}
     </div>
   );
 };
